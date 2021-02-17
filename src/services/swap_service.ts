@@ -1,5 +1,6 @@
 import {
-    AffiliateFee,
+    AffiliateFeeAmount,
+    AffiliateFeeType,
     AssetSwapperContractAddresses,
     ERC20BridgeSource,
     GetMarketOrdersRfqtOpts,
@@ -43,11 +44,11 @@ import { InsufficientFundsError } from '../errors';
 import { logger } from '../logger';
 import { TokenMetadatasForChains } from '../token_metadatas_for_networks';
 import {
+    AffiliateFee,
     BucketedPriceDepth,
     CalaculateMarketDepthParams,
     GetSwapQuoteParams,
     GetSwapQuoteResponse,
-    PercentageFee,
     Price,
     SwapQuoteResponsePartialTransaction,
     TokenMetadata,
@@ -72,7 +73,7 @@ export class SwapService {
         buyTokenDecimals: number,
         sellTokenDecimals: number,
         swapQuote: SwapQuote,
-        affiliateFee: PercentageFee,
+        affiliateFee: AffiliateFee,
     ): { price: BigNumber; guaranteedPrice: BigNumber } {
         const { makerAmount, totalTakerAmount } = swapQuote.bestCaseQuoteInfo;
         const {
@@ -186,7 +187,9 @@ export class SwapService {
         const shouldGenerateQuoteReport = includePriceComparisons || (rfqt && rfqt.intentOnFilling);
 
         const swapQuoteRequestOpts: Partial<SwapQuoteRequestOpts> =
-            isMetaTransaction || affiliateFee.buyTokenPercentageFee > 0 || affiliateFee.sellTokenPercentageFee > 0
+            isMetaTransaction ||
+            // Note: We allow VIP to continue ahead when positive slippage fee is enabled
+            affiliateFee.feeType === AffiliateFeeType.PercentageFee
                 ? ASSET_SWAPPER_MARKET_ORDERS_OPTS_NO_VIP
                 : ASSET_SWAPPER_MARKET_ORDERS_OPTS;
 
@@ -237,7 +240,12 @@ export class SwapService {
             isMetaTransaction,
             shouldSellEntireBalance,
             affiliateAddress,
-            { recipient: affiliateFee.recipient, buyTokenFeeAmount, sellTokenFeeAmount },
+            {
+                recipient: affiliateFee.recipient,
+                feeType: affiliateFee.feeType,
+                buyTokenFeeAmount,
+                sellTokenFeeAmount,
+            },
         );
 
         let conservativeBestCaseGasEstimate = new BigNumber(worstCaseGas)
@@ -286,7 +294,7 @@ export class SwapService {
         // No allowance target is needed if this is an ETH sell, so set to 0x000..
         const allowanceTarget = isETHSell ? NULL_ADDRESS : this._contractAddresses.exchangeProxy;
 
-        const { takerTokenToEthRate, makerTokenToEthRate } = swapQuote;
+        const { takerAmountPerEth: takerTokenToEthRate, makerAmountPerEth: makerTokenToEthRate } = swapQuote;
 
         // Convert into unit amounts
         const wethToken = getTokenMetadataIfExists('WETH', CHAIN_ID)!;
@@ -532,7 +540,8 @@ export class SwapService {
         const gas = await this._web3Wrapper.estimateGasAsync(txData).catch(_e => DEFAULT_VALIDATION_GAS_LIMIT);
         await this._throwIfCallIsRevertErrorAsync({
             ...txData,
-            gas: new BigNumber(gas).times(GAS_LIMIT_BUFFER_MULTIPLIER).integerValue(),
+            // gas: new BigNumber(gas).times(GAS_LIMIT_BUFFER_MULTIPLIER).integerValue(),
+            gas,
         });
         return new BigNumber(gas);
     }
@@ -582,7 +591,7 @@ export class SwapService {
         isMetaTransaction: boolean,
         shouldSellEntireBalance: boolean,
         affiliateAddress: string | undefined,
-        affiliateFee: AffiliateFee,
+        affiliateFee: AffiliateFeeAmount,
     ): Promise<SwapQuoteResponsePartialTransaction> {
         const opts: Partial<SwapQuoteGetOutputOpts> = {
             extensionContractOpts: { isFromETH, isToETH, isMetaTransaction, shouldSellEntireBalance, affiliateFee },
